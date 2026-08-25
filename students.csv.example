@@ -1,0 +1,14 @@
+# students.csv — roster for scripts/10-users.sh   (KEEP PRIVATE: chmod 600)
+#
+# One row per student:   username,password,full name
+#   username : YYfirst.last  (YY = 2-digit graduation year), lowercase, no spaces
+#   password : leave BLANK to auto-generate one (written to the credentials file)
+#   full name: optional; stored as the account comment. No commas in any field.
+#
+# Copy this to the path in config.env (STUDENT_ROSTER_CSV, default /root/students.csv),
+# edit, then:  sudo bash provision.sh 10   (or add --dry-run to preview).
+username,password,full name
+28jane.doe,ChangeMe-28JD,Jane Doe
+28john.smith,,John Smith
+27ava.nguyen,S3cure-Pass,Ava Nguyen
+27mary-jane.oconnor,,Mary-Jane O'Connor
