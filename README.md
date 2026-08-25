@@ -2,7 +2,6 @@
 
 ## todo
 confirm reachability
-confirm prtg probe
 
 Provisioning scripts + config for a headless VM that students share over SSH. Accounts are **local users provisioned from a CSV roster** and **reconciled on every run** - new rows are created, removed rows are disabled or deleted. Each student is boxed in by **cgroups v2** resource caps, and **Go / Node.js / Python3 / Neovim** are installed system-wide. I include neovim because it's muscle memory - nothing can be done about it.
 
@@ -35,10 +34,11 @@ etc/                               # config templates (@PLACEHOLDERS@ from confi
    ```bash
    scp -r wsl-build/ admin@vm-host:/opt/cst-vm
    ```
-2. **Lock down the folder on the server.** It holds the roster CSV, generated credentials, and your Sophos installer — make it root-owned and unreadable to students before anything else:
+2. **Lock down the folder on the server.** It holds `config.env` and your Sophos installer, so make it root-owned and unreadable to students before anything else (the roster and generated-credentials files are protected separately — see steps 4 and 6):
    ```bash
    sudo chown -R root:root /opt/cst-vm
-   sudo chmod -R 0600 /opt/cst-vm
+   sudo find /opt/cst-vm -type d -exec chmod 0700 {} +
+   sudo find /opt/cst-vm -type f -exec chmod 0600 {} +
    ```
 3. **Review `config.env`** - resource caps, tool versions.
 4. **Create the roster.** Copy `students.csv.example` to the path in `STUDENT_ROSTER_CSV` (default `/opt/cst-vm/students.csv`), fill it in, and keep it private:
