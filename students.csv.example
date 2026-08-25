@@ -5,7 +5,7 @@
 #   password : leave BLANK to auto-generate one (written to the credentials file)
 #   full name: optional; stored as the account comment. No commas in any field.
 #
-# Copy this to the path in config.env (STUDENT_ROSTER_CSV, default /root/students.csv),
+# Copy this to the path in config.env (STUDENT_ROSTER_CSV, default /opt/cst-vm/students.csv),
 # edit, then:  sudo bash provision.sh 10   (or add --dry-run to preview).
 username,password,full name
 28jane.doe,ChangeMe-28JD,Jane Doe

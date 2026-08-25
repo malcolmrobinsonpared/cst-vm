@@ -16,25 +16,26 @@ fi
 log "writing /etc/motd (student welcome)"
 cat >/etc/motd <<EOF
 
-  ===============================================================
-    PARED student dev server -- a few things to know
-  ===============================================================
+  =================================================================
+    Welcome to the PARED student dev server.
+  =================================================================
 
   - Back up your work with GIT. Home directories are NOT backed up
     for you: commit and push to GitHub regularly.
 
   - Your session ends when you log out${idle_note}, and background
-    programs stop when you disconnect. Nothing keeps running while
-    you are away -- that's normal; just start it again next time.
+    programs stop when you disconnect.
 
   - Disk space is limited to about ${QUOTA_HARD} per person.  Check yours:
         quota -s
 
-  - No sudo. Python, Node, Go and many common libraries are already
-    installed. Need a system package? Ask ${MOTD_IT_CONTACT}.
+  - No sudo. Python, Node, Go and many common libraries are already installed. 
+    Need a system package? Ask ${MOTD_IT_CONTACT}.
 
-  - Python packages: use a virtual environment for your own deps:
-        python3 -m venv .venv && source .venv/bin/activate && pip install ...
+  - Python packages: use a virtual environment for your own packages:
+        python3 -m venv .venv 
+        source .venv/bin/activate
+        pip install ...
 
   - Dev web servers: listen on a port in ${MOTD_DEV_PORTS} and bind
     0.0.0.0 (not 127.0.0.1) to reach it from your browser on the network.
