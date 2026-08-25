@@ -2,8 +2,12 @@
 # =============================================================================
 # provision.sh — build an Ubuntu Server 26.04 LTS box for ~20 SSH students.
 #
-# Idempotent-ish: safe to re-run. Runs the numbered scripts in scripts/ in
-# order. Must run as root on the target VM (not on your workstation).
+# Idempotent + convergent: safe to re-run, and re-running after you change a
+# setting in config.env brings the box to the new state (flipping a HARDENING_*/
+# ENABLE_* toggle off reverts what it installed). One deliberate exception: the
+# package lists in 35-packages.sh are add-only — see that script's header.
+# Runs the numbered scripts in scripts/ in order. Must run as root on the target
+# VM (not on your workstation).
 #
 #   sudo ./provision.sh              # run everything
 #   sudo ./provision.sh 20 30        # run only 20-* and 30-* stages

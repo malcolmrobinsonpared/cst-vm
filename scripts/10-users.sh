@@ -86,8 +86,13 @@ record_generated() { # user plaintext
   if (( DRY )); then return 0; fi
   if (( ! CREDS_STARTED )); then
     umask 077
-    { echo "# Generated passwords (blank CSV rows) — $(date -Is)"
-      echo "# username : password"; } >"${CREDENTIALS_FILE}"
+    # Append across runs: write the header only when the file is new/empty, so a
+    # later run that adds one student can't truncate and lose the passwords
+    # generated for earlier students.
+    if [[ ! -s "${CREDENTIALS_FILE}" ]]; then
+      { echo "# Generated passwords (blank CSV rows) — $(date -Is)"
+        echo "# username : password"; } >"${CREDENTIALS_FILE}"
+    fi
     chmod 0600 "${CREDENTIALS_FILE}"
     CREDS_STARTED=1
   fi
@@ -157,11 +162,16 @@ for u in "${!want_pw[@]}"; do
   fi
 
   # ---- new: create ----------------------------------------------------------
-  if [[ -z "$pw" ]]; then pw="$(gen_pw)"; record_generated "$u" "$pw"; gencount=$(( gencount + 1 )); fi
+  gen_this=0
+  if [[ -z "$pw" ]]; then pw="$(gen_pw)"; gen_this=1; fi
   ua_opts=(--create-home --shell "${STUDENT_SHELL}" --groups "${STUDENT_GROUP}" --comment "${cmt:-Student}")
   [[ -n "$BADNAMES_FLAG" ]] && ua_opts=("$BADNAMES_FLAG" "${ua_opts[@]}")
   if do_cmd useradd "${ua_opts[@]}" "$u"; then
     set_password "$u" "$pw"
+    # Record the generated password ONLY after the account actually exists.
+    # Otherwise a create that keeps failing (e.g. a name useradd rejects) would
+    # mint a fresh password + orphan credentials line on every single re-run.
+    if (( gen_this )); then record_generated "$u" "$pw"; gencount=$(( gencount + 1 )); fi
     [[ "${FORCE_PW_CHANGE}" == "yes" ]] && do_cmd chage -d 0 "$u"
     log "create ${u}"
     added=$(( added + 1 ))

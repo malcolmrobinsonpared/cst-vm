@@ -4,10 +4,16 @@
 # A student with a shell + compilers + network can always run code; these
 # controls target what you CAN defend: persistence (no 24/7 servers), inbound
 # exposure, student-to-student isolation, and shared-disk fairness. Every block
-# is gated by a HARDENING_* / ENABLE_* toggle in config.env, so loosening any
-# single restriction is a one-line change + re-run of this stage.
+# is gated by a HARDENING_* / ENABLE_* toggle in config.env.
+#
+# Fully idempotent + convergent: each block is SYMMETRIC — flipping a toggle off
+# (or clearing a value) reverts the artifact its "on" side installed, and config
+# files are only rewritten (and services only restarted) when the content really
+# changes. So re-running is a no-op, and changing a setting on a live server
+# converges the box without a manual undo.
 set -euo pipefail
 source "${HERE:?run via provision.sh}/config.env"
+source "${HERE}/lib/common.sh"
 
 yes() { [[ "${1:-no}" == "yes" ]]; }
 
@@ -33,53 +39,40 @@ student_homes() {
   done
 }
 
-ADMIN_GID="$(getent group "${ADMIN_GROUP}" | cut -d: -f3 || true)"
+# Map a home dir back to its username.
+user_of_home() { getent passwd | awk -F: -v home="$1" '$6==home {print $1}' | head -1; }
 
-# Add 'usrquota' to the fstab options of a mountpoint (ext* only), preserving all
-# other lines verbatim. Backs up fstab and validates before replacing. Returns 0
-# if the option is present afterwards, non-zero on failure.
-add_usrquota_to_fstab() {
-  local mp="$1" tmp bak
-  # already present in that mount's options (field 4)?
-  awk -v mp="$mp" '!/^[[:space:]]*#/ && $2==mp && $4 ~ /(^|,)usrquota(,|$)/ {f=1} END{exit f?0:1}' \
-    /etc/fstab && return 0
-  tmp="$(mktemp)"; bak="/etc/fstab.bak-$(date +%s)"
-  awk -v mp="$mp" '
-    /^[[:space:]]*#/ { print; next }
-    NF>=4 && $2==mp {
-      if ($4 !~ /(^|,)usrquota(,|$)/) $4=$4",usrquota"
-      printf "%s %s %s %s %s %s\n", $1,$2,$3,$4,($5==""?"0":$5),($6==""?"0":$6)
-      found=1; next
-    }
-    { print }
-    END { if(!found) exit 3 }
-  ' /etc/fstab > "$tmp" || { rm -f "$tmp"; return 1; }
-  # sanity: the target mount line still exists in the rewritten file
-  grep -qE "^[^#]*[[:space:]]${mp}[[:space:]]" "$tmp" || { rm -f "$tmp"; return 1; }
-  cp -a /etc/fstab "$bak" && cat "$tmp" > /etc/fstab && rm -f "$tmp" \
-    && { log "  backed up /etc/fstab -> ${bak}"; return 0; }
-  rm -f "$tmp"; return 1
-}
+ADMIN_GID="$(getent group "${ADMIN_GROUP}" | cut -d: -f3 || true)"
 
 # --- logind: kill user processes on logout ----------------------------------
 if yes "${HARDENING_KILL_USER_PROCESSES}"; then
   log "logind: KillUserProcesses=yes (exclude: ${HARDENING_KILL_EXCLUDE_USERS})"
   install -d -m 0755 /etc/systemd/logind.conf.d
-  cat >/etc/systemd/logind.conf.d/50-hardening.conf <<EOF
+  tmp="$(mktemp)"
+  cat >"${tmp}" <<EOF
 # Managed by 45-hardening.sh — nothing a student starts survives logout.
 [Login]
 KillUserProcesses=yes
 KillExcludeUsers=${HARDENING_KILL_EXCLUDE_USERS}
 EOF
-  # Reloading logind can drop live sessions; fine during provisioning.
-  systemctl restart systemd-logind || warn "could not restart systemd-logind (applies after reboot)"
+  # Restart logind ONLY when the drop-in actually changed (a restart can drop
+  # live sessions — fine during a real change, wasteful on an unchanged re-run).
+  if write_if_changed "${tmp}" /etc/systemd/logind.conf.d/50-hardening.conf 0644; then
+    systemctl restart systemd-logind || warn "could not restart systemd-logind (applies after reboot)"
+  fi
+else
+  if ensure_absent /etc/systemd/logind.conf.d/50-hardening.conf; then
+    log "logind: removed kill-on-logout drop-in"
+    systemctl restart systemd-logind || warn "could not restart systemd-logind (applies after reboot)"
+  fi
 fi
 
 # --- deny non-admins the linger loophole ------------------------------------
 if yes "${HARDENING_DISABLE_LINGER}"; then
   log "polkit: only ${ADMIN_GROUP} may enable linger"
   install -d -m 0755 /etc/polkit-1/rules.d
-  cat >/etc/polkit-1/rules.d/50-no-linger.rules <<EOF
+  tmp="$(mktemp)"
+  cat >"${tmp}" <<EOF
 // Managed by 45-hardening.sh — students can't make processes persist via linger.
 polkit.addRule(function(action, subject) {
   if (action.id == "org.freedesktop.login1.set-user-linger" &&
@@ -88,23 +81,35 @@ polkit.addRule(function(action, subject) {
   }
 });
 EOF
+  write_if_changed "${tmp}" /etc/polkit-1/rules.d/50-no-linger.rules 0644 || true
   # Revoke any linger a student already enabled.
   while IFS= read -r h; do
-    u="$(getent passwd | awk -F: -v home="$h" '$6==home {print $1}' | head -1)"
+    u="$(user_of_home "$h")"
     [[ -n "$u" ]] && loginctl disable-linger "$u" 2>/dev/null || true
   done < <(student_homes)
+else
+  if ensure_absent /etc/polkit-1/rules.d/50-no-linger.rules; then
+    log "polkit: removed linger restriction (non-admins may enable linger again)"
+  fi
 fi
 
 # --- restrict cron + at to admins -------------------------------------------
 if yes "${HARDENING_RESTRICT_CRON}"; then
   log "cron/at: allow root + ${ADMIN_GROUP} only"
+  tmp="$(mktemp)"
   {
     echo root
     getent group "${ADMIN_GROUP}" | awk -F: '{print $4}' | tr ',' '\n'
-  } | sed '/^$/d' | sort -u >/etc/cron.allow
-  install -m 0600 /etc/cron.allow /etc/at.allow
-  chmod 0600 /etc/cron.allow
-  # Presence of *.allow means everyone not listed is denied.
+  } | sed '/^$/d' | sort -u >"${tmp}"
+  # Presence of *.allow means everyone not listed is denied. at.allow mirrors it.
+  write_if_changed "${tmp}" /etc/cron.allow 0600 || true
+  tmp2="$(mktemp)"; cp -a /etc/cron.allow "${tmp2}"
+  write_if_changed "${tmp2}" /etc/at.allow 0600 || true
+else
+  removed=0
+  ensure_absent /etc/cron.allow && removed=1 || true
+  ensure_absent /etc/at.allow   && removed=1 || true
+  (( removed )) && log "cron/at: removed *.allow — reverted to default (cron.deny / allow-all)" || true
 fi
 
 # --- idle-shell auto-logout (bash TMOUT) ------------------------------------
@@ -114,7 +119,8 @@ fi
 # cut off.
 if [[ -n "${HARDENING_IDLE_TIMEOUT:-}" && "${HARDENING_IDLE_TIMEOUT}" != "0" ]]; then
   log "idle logout: ${HARDENING_IDLE_TIMEOUT}s for non-admins (bash TMOUT)"
-  cat >/etc/profile.d/99-idle-timeout.sh <<EOF
+  tmp="$(mktemp)"
+  cat >"${tmp}" <<EOF
 # Managed by 45-hardening.sh — idle-shell auto-logout for students (not admins).
 if [ -n "\${PS1-}" ]; then
   if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx '${ADMIN_GROUP}'; then
@@ -124,15 +130,16 @@ if [ -n "\${PS1-}" ]; then
   fi
 fi
 EOF
-  chmod 0644 /etc/profile.d/99-idle-timeout.sh
+  write_if_changed "${tmp}" /etc/profile.d/99-idle-timeout.sh 0644 || true
 else
-  rm -f /etc/profile.d/99-idle-timeout.sh   # disabled -> remove any prior copy
+  ensure_absent /etc/profile.d/99-idle-timeout.sh || true   # disabled -> remove any prior copy
 fi
 
 # --- kernel sysctl hardening ------------------------------------------------
 if yes "${HARDENING_SYSCTL}"; then
   log "sysctl: kernel hardening"
-  cat >/etc/sysctl.d/90-hardening.conf <<'EOF'
+  tmp="$(mktemp)"
+  cat >"${tmp}" <<'EOF'
 # Managed by 45-hardening.sh
 kernel.dmesg_restrict=1
 kernel.kptr_restrict=2
@@ -142,7 +149,7 @@ kernel.perf_event_paranoid=3
 kernel.yama.ptrace_scope=1
 EOF
   if yes "${HARDENING_RESTRICT_USERNS}"; then
-    cat >>/etc/sysctl.d/90-hardening.conf <<'EOF'
+    cat >>"${tmp}" <<'EOF'
 # Block rootless containers / reduce kernel attack surface. First key is the
 # Ubuntu 24.04+ AppArmor gate; second is the older Debian knob. Unknown keys on
 # a given kernel are simply ignored.
@@ -150,7 +157,9 @@ kernel.apparmor_restrict_unprivileged_userns=1
 kernel.unprivileged_userns_clone=0
 EOF
   fi
-  sysctl --system >/dev/null 2>&1 || warn "some sysctl keys not present on this kernel (harmless)"
+  if write_if_changed "${tmp}" /etc/sysctl.d/90-hardening.conf 0644; then
+    sysctl --system >/dev/null 2>&1 || warn "some sysctl keys not present on this kernel (harmless)"
+  fi
   # The unprivileged-userns restriction is AppArmor-mediated on Ubuntu; if
   # AppArmor is off it silently does nothing. Warn rather than fail.
   if yes "${HARDENING_RESTRICT_USERNS}"; then
@@ -159,19 +168,32 @@ EOF
       warn "  (Stock Ubuntu enables it by default; check 'aa-status' if this fires.)"
     fi
   fi
+else
+  if ensure_absent /etc/sysctl.d/90-hardening.conf; then
+    log "sysctl: removed kernel-hardening file"
+    sysctl --system >/dev/null 2>&1 || true    # re-assert the distro baseline
+    warn "sysctl: persistent hardening removed; any live kernel values fully revert on next reboot."
+  fi
 fi
 
 # --- hidepid on /proc -------------------------------------------------------
 if yes "${HARDENING_HIDEPID}"; then
   if [[ -n "${ADMIN_GID}" ]]; then
     log "hidepid=2 on /proc (trusted gid ${ADMIN_GID} = ${ADMIN_GROUP})"
-    if ! grep -qE '^\s*proc\s+/proc\s' /etc/fstab; then
-      echo "proc /proc proc defaults,hidepid=2,gid=${ADMIN_GID} 0 0" >>/etc/fstab
-    fi
+    # Marker-managed so a changed admin gid rewrites the line instead of leaving
+    # a stale one (the old grep-guard only appended when absent).
+    set_fstab_mount /proc "proc /proc proc defaults,hidepid=2,gid=${ADMIN_GID} 0 0" \
+      && log "  updated /proc entry in /etc/fstab" || true
     mount -o remount,hidepid=2,gid="${ADMIN_GID}" /proc \
       || warn "could not remount /proc now; applies on reboot"
   else
     warn "hidepid: admin group '${ADMIN_GROUP}' has no gid; skipping"
+  fi
+else
+  if unset_fstab_mount /proc; then log "hidepid: removed managed /proc entry from /etc/fstab"; fi
+  if findmnt -no OPTIONS /proc 2>/dev/null | grep -qE 'hidepid=[12s]'; then
+    mount -o remount,hidepid=0 /proc 2>/dev/null \
+      || warn "could not remount /proc to hidepid=0 now; applies on reboot"
   fi
 fi
 
@@ -195,15 +217,31 @@ if [[ -n "${HARDENING_HOME_MODE}" ]]; then
   while IFS= read -r h; do
     [[ -d "$h" ]] && chmod "${HARDENING_HOME_MODE}" "$h" || true
   done < <(student_homes)
+else
+  # Cleared -> revert login.defs to conventional defaults and drop pam_umask.
+  # (Existing student homes are NOT re-opened automatically — loosening privacy
+  #  on already-private homes should be a deliberate manual step.)
+  log "home dirs: HOME_MODE cleared — reverting login.defs defaults + removing pam_umask"
+  grep -qE '^\s*HOME_MODE' /etc/login.defs && sed -i 's/^\s*HOME_MODE.*/HOME_MODE\t0755/' /etc/login.defs || true
+  grep -qE '^\s*UMASK'     /etc/login.defs && sed -i 's/^\s*UMASK.*/UMASK\t\t022/'       /etc/login.defs || true
+  sed -i '/^session\s\+optional\s\+pam_umask.so/d' /etc/pam.d/common-session
 fi
 
 # --- restrict FUSE to admins ------------------------------------------------
+FUSE_BINS=(/usr/bin/fusermount3 /usr/bin/fusermount /bin/fusermount3 /bin/fusermount)
 if yes "${HARDENING_RESTRICT_FUSE}"; then
   log "FUSE: restrict fusermount to ${ADMIN_GROUP}"
-  for fb in /usr/bin/fusermount3 /usr/bin/fusermount /bin/fusermount3 /bin/fusermount; do
+  for fb in "${FUSE_BINS[@]}"; do
     [[ -e "$fb" ]] || continue
     chown "root:${ADMIN_GROUP}" "$fb" && chmod 4750 "$fb" \
       && log "  restricted ${fb}" || warn "  could not restrict ${fb}"
+  done
+else
+  log "FUSE: restoring default fusermount ownership/mode (root:root 4755)"
+  for fb in "${FUSE_BINS[@]}"; do
+    [[ -e "$fb" ]] || continue
+    chown root:root "$fb" && chmod 4755 "$fb" \
+      && log "  reset ${fb}" || warn "  could not reset ${fb}"
   done
 fi
 
@@ -214,15 +252,23 @@ if yes "${HARDENING_HARDEN_TMP}"; then
   yes "${HARDENING_TMP_NOEXEC}" && tmp_opts="${tmp_opts},noexec"
 
   log "mounts: /dev/shm (${shm_opts}), /tmp (${tmp_opts},size=${HARDENING_TMP_SIZE})"
-  if ! grep -qE '\s/dev/shm\s' /etc/fstab; then
-    echo "tmpfs /dev/shm tmpfs ${shm_opts} 0 0" >>/etc/fstab
-  fi
+  # Marker-managed: changing TMP_SIZE / TMP_NOEXEC rewrites the line (the old
+  # grep-guard left the stale line in place).
+  set_fstab_mount /dev/shm "tmpfs /dev/shm tmpfs ${shm_opts} 0 0" \
+    && log "  set /dev/shm fstab entry" || true
   mount -o "remount,${shm_opts}" /dev/shm || warn "could not remount /dev/shm now (applies on reboot)"
 
-  if ! grep -qE '\s/tmp\s' /etc/fstab; then
-    echo "tmpfs /tmp tmpfs ${tmp_opts},size=${HARDENING_TMP_SIZE} 0 0" >>/etc/fstab
-    warn "/tmp will become a size-capped tmpfs on next reboot (not remounted live)."
+  if set_fstab_mount /tmp "tmpfs /tmp tmpfs ${tmp_opts},size=${HARDENING_TMP_SIZE} 0 0"; then
+    warn "/tmp fstab entry set/updated; size+opts apply on next reboot (not remounted live)."
   fi
+else
+  if unset_fstab_mount /dev/shm; then log "tmp-hardening: removed managed /dev/shm fstab entry"; fi
+  # Drop the one option we add beyond the distro default for /dev/shm (noexec).
+  if findmnt -no OPTIONS /dev/shm 2>/dev/null | grep -qw noexec; then
+    mount -o remount,exec /dev/shm 2>/dev/null \
+      || warn "could not drop noexec on /dev/shm live (applies on reboot)"
+  fi
+  if unset_fstab_mount /tmp; then warn "tmp-hardening: removed managed /tmp fstab entry (reverts on reboot)"; fi
 fi
 
 # --- per-user disk quotas ---------------------------------------------------
@@ -233,12 +279,13 @@ if yes "${ENABLE_HOME_QUOTA}"; then
   fstype="$(findmnt -no FSTYPE "$mp" 2>/dev/null || echo '')"
 
   if mount | grep -E "on ${mp} " | grep -qE 'usrquota|usrjquota'; then
-    # Quota is live on the mount — apply per-student limits.
+    # Quota is live on the mount — apply per-student limits (setquota re-applies
+    # each run, so changed QUOTA_SOFT/HARD values converge).
     quotaon "${mp}" 2>/dev/null || true
     soft_kb="$(to_kb "${QUOTA_SOFT}")"; hard_kb="$(to_kb "${QUOTA_HARD}")"
     n=0
     while IFS= read -r h; do
-      u="$(getent passwd | awk -F: -v home="$h" '$6==home {print $1}' | head -1)"
+      u="$(user_of_home "$h")"
       [[ -n "$u" ]] || continue
       setquota -u "$u" "${soft_kb}" "${hard_kb}" \
         "${QUOTA_INODES_SOFT}" "${QUOTA_INODES_HARD}" "${mp}" \
@@ -249,13 +296,12 @@ if yes "${ENABLE_HOME_QUOTA}"; then
     # Not live yet. On ext*, enable it in fstab now; a reboot then activates it.
     case "$fstype" in
       ext2|ext3|ext4)
-        if add_usrquota_to_fstab "$mp"; then
+        if set_fstab_opt "$mp" usrquota; then
           warn "enabled 'usrquota' on ${mp} (${fstype}) in /etc/fstab."
           warn ">> REBOOT, then re-run:  sudo bash provision.sh 45   <<  to apply the limits."
           warn "   (boot auto-runs quotacheck/quotaon; this stage then sets each student's cap.)"
         else
-          warn "couldn't edit /etc/fstab automatically. Add 'usrquota' to the ${mp} options,"
-          warn "reboot, then re-run stage 45."
+          warn "'usrquota' already in fstab for ${mp} but quota isn't live — reboot, then re-run stage 45."
         fi
         ;;
       *)
@@ -264,7 +310,22 @@ if yes "${ENABLE_HOME_QUOTA}"; then
         ;;
     esac
   fi
+else
+  # Disabled -> zero any live limits, quotaoff, and strip usrquota from fstab.
+  mp="$(df --output=target /home 2>/dev/null | tail -1)"
+  if mount | grep -E "on ${mp} " | grep -qE 'usrquota|usrjquota'; then
+    log "quota: disabling — zeroing student limits + quotaoff on ${mp}"
+    while IFS= read -r h; do
+      u="$(user_of_home "$h")"
+      [[ -n "$u" ]] || continue
+      setquota -u "$u" 0 0 0 0 "${mp}" 2>/dev/null || true
+    done < <(student_homes)
+    quotaoff "${mp}" 2>/dev/null || true
+  fi
+  if unset_fstab_opt "$mp" usrquota; then
+    warn "quota: removed 'usrquota' from ${mp} in /etc/fstab (fully reverts on reboot)."
+  fi
 fi
 
 log "hardening stage complete"
-log "  some controls (/tmp tmpfs, /proc hidepid, sysctl) fully apply after a reboot."
+log "  some controls (/tmp tmpfs, /proc hidepid, sysctl) fully apply/revert after a reboot."

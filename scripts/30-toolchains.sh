@@ -51,6 +51,13 @@ else
   log "  node v${NODE_VERSION} already present"
 fi
 ln -sfn "${NODE_DIR}" /opt/node
+# Converge: drop Node trees from superseded versions (a bump leaves the old
+# ~150MB /opt/node-v<old> behind otherwise).
+for d in /opt/node-v*; do
+  if [[ -d "$d" && "$d" != "${NODE_DIR}" ]]; then
+    log "  removing superseded ${d}"; rm -rf "$d"
+  fi
+done
 
 # --- Neovim ------------------------------------------------------------------
 log "installing Neovim ${NVIM_VERSION}"
@@ -70,6 +77,12 @@ else
   log "  nvim v${NVIM_VERSION} already present"
 fi
 ln -sfn "${NVIM_DIR}" /opt/nvim
+# Converge: drop Neovim trees from superseded versions.
+for d in /opt/nvim-*; do
+  if [[ -d "$d" && "$d" != "${NVIM_DIR}" ]]; then
+    log "  removing superseded ${d}"; rm -rf "$d"
+  fi
+done
 ln -sfn /opt/nvim/bin/nvim /usr/local/bin/nvim
 # Make nvim the default vi/vim/editor for everyone.
 update-alternatives --install /usr/bin/editor editor /usr/local/bin/nvim 60

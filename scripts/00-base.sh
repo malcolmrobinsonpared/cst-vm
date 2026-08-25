@@ -2,6 +2,7 @@
 # 00-base.sh — base packages, updates, hardening scaffolding.
 set -euo pipefail
 source "${HERE:?run via provision.sh}/config.env"
+source "${HERE}/lib/common.sh"
 
 log "updating apt and installing base packages"
 apt-get update -y
@@ -27,7 +28,8 @@ EOF
 
 # --- fail2ban: protect the public SSH port ----------------------------------
 log "configuring fail2ban for sshd"
-cat >/etc/fail2ban/jail.d/sshd.local <<EOF
+f2b_tmp="$(mktemp)"
+cat >"${f2b_tmp}" <<EOF
 [sshd]
 enabled  = true
 port     = ${SSH_PORT}
@@ -38,7 +40,16 @@ bantime  = 1h
 # Never ban these (e.g. admin jump hosts). loopback is implicit.
 ignoreip = 127.0.0.1/8 ::1 ${FAIL2BAN_IGNORE_IPS:-}
 EOF
-systemctl enable --now fail2ban
+f2b_changed=0
+write_if_changed "${f2b_tmp}" /etc/fail2ban/jail.d/sshd.local 0644 && f2b_changed=1 || true
+systemctl enable fail2ban >/dev/null 2>&1 || true
+# fail2ban is already running after apt-install, so `enable --now` never re-reads
+# the jail. Reload only when it changed (or isn't running) so a changed SSH_PORT
+# / ignore-list actually converges on the live daemon, but a plain re-run is a
+# no-op. A fail2ban reload does not drop established SSH sessions.
+if (( f2b_changed )) || ! systemctl is-active --quiet fail2ban; then
+  systemctl reload-or-restart fail2ban || warn "fail2ban reload failed"
+fi
 
 # --- timezone (so "nightly reboot" and logs are in local time) --------------
 if [[ -n "${TIMEZONE:-}" ]]; then
@@ -51,14 +62,18 @@ fi
 # timer (OnCalendar honours the timezone above) rather than user cron.
 if [[ -n "${AUTO_REBOOT_TIME:-}" ]]; then
   log "scheduling nightly reboot at ${AUTO_REBOOT_TIME} (${TIMEZONE:-system tz})"
-  cat >/etc/systemd/system/nightly-reboot.service <<'EOF'
+  nr_changed=0
+  nr_svc="$(mktemp)"
+  cat >"${nr_svc}" <<'EOF'
 [Unit]
 Description=Nightly maintenance reboot (managed by provision.sh)
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/shutdown -r now "Nightly maintenance reboot"
 EOF
-  cat >/etc/systemd/system/nightly-reboot.timer <<EOF
+  write_if_changed "${nr_svc}" /etc/systemd/system/nightly-reboot.service 0644 && nr_changed=1 || true
+  nr_tmr="$(mktemp)"
+  cat >"${nr_tmr}" <<EOF
 [Unit]
 Description=Nightly maintenance reboot at ${AUTO_REBOOT_TIME}
 [Timer]
@@ -67,11 +82,15 @@ Persistent=false
 [Install]
 WantedBy=timers.target
 EOF
-  systemctl daemon-reload
-  systemctl enable --now nightly-reboot.timer
+  write_if_changed "${nr_tmr}" /etc/systemd/system/nightly-reboot.timer 0644 && nr_changed=1 || true
+  (( nr_changed )) && systemctl daemon-reload || true
+  systemctl enable --now nightly-reboot.timer >/dev/null
 else
   systemctl disable --now nightly-reboot.timer 2>/dev/null || true
-  rm -f /etc/systemd/system/nightly-reboot.timer /etc/systemd/system/nightly-reboot.service
+  nr_removed=0
+  ensure_absent /etc/systemd/system/nightly-reboot.timer   && nr_removed=1 || true
+  ensure_absent /etc/systemd/system/nightly-reboot.service && nr_removed=1 || true
+  (( nr_removed )) && systemctl daemon-reload || true
 fi
 
 # --- make sure cgroups v2 unified hierarchy + memory accounting are on -------

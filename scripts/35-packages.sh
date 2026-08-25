@@ -10,8 +10,12 @@
 #
 # (Containers are intentionally NOT installed — see the hardening notes.)
 #
-# Idempotent-ish: apt/npm/go install are safe to re-run; a missing package name
-# is skipped with a warning instead of aborting the whole stage.
+# Idempotent, but ADD-ONLY BY DESIGN: apt/npm/go install are safe to re-run, and
+# a missing package name is skipped with a warning instead of aborting. However
+# these lists are only ever installed, never reconciled — REMOVING a name from
+# APT_PYTHON_PACKAGES / APT_DEV_UTILS / NPM_GLOBAL_PACKAGES / GO_TOOLS does NOT
+# uninstall it on the next run. To retire a package, uninstall it by hand
+# (apt-get purge / npm -g uninstall / rm the /usr/local/bin binary).
 set -euo pipefail
 source "${HERE:?run via provision.sh}/config.env"
 
