@@ -111,14 +111,7 @@ Students can run development web servers on the box — `python -m http.server`,
 - **One box, one IP, one port space.** If several students pick the same port they collide ("address already in use"). For 20 students, hand out per-student blocks inside 3000–3999 (e.g. student *N* → `3000 + N*10 … +9`, so 50 ports each) or just have them coordinate.
 - **Servers are ephemeral by design.** Kill-on-logout (and the idle-shell logout) mean a server only runs while that student is actively connected; on logout the port frees and nothing lingers. No inbound host firewall or SSH forwarding is involved — access is purely your SDN.
 
-## Endpoint protection (Sophos) & monitoring (PRTG)
+## Endpoint protection (Sophos)
 
 **Sophos** is the reason this box is Ubuntu - its Central-managed agent isn't supported on NixOS :/
 The installer embeds your tenant token and isn't in the repo — download `SophosSetup.sh` from your Sophos Central account, drop it next to `provision.sh`, and stage 50 installs it (`--products=mdr,xdr,antivirus`). It's idempotent: skips if `/opt/sophos-spl` already exists, and skips with a note if the file isn't there. **After install, confirm the box shows healthy in the Sophos Central console** — that's the compliance control the OS choice was made for. Change the products/path via `SOPHOS_PRODUCTS` / `SOPHOS_INSTALLER`.
-
-**PRTG** monitors over SSH from a probe. Two hardening interactions to get right so sensors aren't blinded or blocked:
-
-- **Give the probe an account in `ADMIN_GROUP` (sudo).** It must be in a group listed in `SSH_ALLOW_GROUPS` to connect at all, and — because `/proc` runs with `hidepid=2` — only the admin group sees *other users'* processes. System sensors (load, meminfo, disk) read fine regardless; **per-process** sensors need that group membership.
-- **Add the probe's IP to `FAIL2BAN_IGNORE_IPS`** so repeated SSH sensor connections can never trip a ban and lock monitoring out.
-
-Idle-logout and kill-on-logout don't affect PRTG — its SSH sensors run a command and disconnect, they don't sit at an idle interactive prompt.
