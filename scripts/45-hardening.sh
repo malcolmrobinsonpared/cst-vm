@@ -225,21 +225,6 @@ if yes "${HARDENING_HARDEN_TMP}"; then
   fi
 fi
 
-# --- inbound firewall (ufw) -------------------------------------------------
-if yes "${ENABLE_UFW}"; then
-  log "ufw: default-deny inbound, allow SSH (${SSH_PORT}) + [${UFW_EXTRA_ALLOW}]"
-  if apt-get install -y --no-install-recommends ufw >/dev/null; then
-    ufw default deny incoming  >/dev/null
-    ufw default allow outgoing >/dev/null
-    ufw allow "${SSH_PORT}/tcp" >/dev/null    # allow SSH FIRST so enabling can't lock us out
-    for p in ${UFW_EXTRA_ALLOW}; do ufw allow "${p}/tcp" >/dev/null; done
-    ufw --force enable >/dev/null
-    log "  ufw active"
-  else
-    warn "ufw install failed; skipping firewall"
-  fi
-fi
-
 # --- per-user disk quotas ---------------------------------------------------
 if yes "${ENABLE_HOME_QUOTA}"; then
   log "quota: per-user home-dir size limits (${QUOTA_SOFT} soft / ${QUOTA_HARD} hard)"

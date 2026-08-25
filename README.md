@@ -1,8 +1,6 @@
 # Student VM build — Ubuntu Server 26.04 LTS
 
 ## todo
-make this dir 0600 after copy
-remove ufw altogether
 confirm reachability
 confirm prtg probe
 
@@ -37,22 +35,27 @@ etc/                               # config templates (@PLACEHOLDERS@ from confi
    ```bash
    scp -r wsl-build/ admin@vm-host:/opt/cst-vm
    ```
-2. **Review `config.env`** - resource caps, tool versions.
-3. **Create the roster.** Copy `students.csv.example` to the path in `STUDENT_ROSTER_CSV` (default `/opt/cst-vm/students.csv`), fill it in, and keep it private:
+2. **Lock down the folder on the server.** It holds the roster CSV, generated credentials, and your Sophos installer — make it root-owned and unreadable to students before anything else:
+   ```bash
+   sudo chown -R root:root /opt/cst-vm
+   sudo chmod -R 0600 /opt/cst-vm
+   ```
+3. **Review `config.env`** - resource caps, tool versions.
+4. **Create the roster.** Copy `students.csv.example` to the path in `STUDENT_ROSTER_CSV` (default `/opt/cst-vm/students.csv`), fill it in, and keep it private:
    ```bash
    cp students.csv.example students.csv && chmod 600 students.csv
    # edit /opt/cst-vm/students.csv — one "username,password,full name" row per student
    ```
    Leave a password blank to have one generated for you.
-4. Run it as root:
+5. Run it as root:
    ```bash
    cd /opt/cst-vm
    sudo bash provision.sh
    ```
 
-5. If any rows had blank passwords, collect the generated ones from `/opt/cst-vm/student-credentials.txt`, distribute, then delete the file.
+6. If any rows had blank passwords, collect the generated ones from `/opt/cst-vm/student-credentials.txt`, distribute, then delete the file.
 
-6. Reboot after the first full run. Then, to activate disk quotas, run stage 45 once more (`sudo bash provision.sh 45`) — it applies each student's home-dir limit now that the reboot has enabled quotas. Finally, verify (below).
+7. Reboot after the first full run. Then, to activate disk quotas, run stage 45 once more (`sudo bash provision.sh 45`) — it applies each student's home-dir limit now that the reboot has enabled quotas. Finally, verify (below).
 
 **Updating the roster later:** edit the CSV and re-run stage 10 (`sudo bash provision.sh 10`). New rows are created, rows you removed are **disabled** (home kept) or **deleted** per `REMOVED_ACCOUNT_ACTION`, and a student you add back is re-enabled. Existing passwords are left untouched unless you pass `--reset-passwords`.
 
@@ -92,7 +95,6 @@ A shared box gives ~20 students a shell, compilers, and network — you can't st
 | **Private homes + umask** | Reading each other's files (cheating/privacy) | `HARDENING_HOME_MODE`, `HARDENING_UMASK` | none |
 | **Restrict FUSE** | `sshfs`/`rclone` mounts for exfil/egress-bypass | `HARDENING_RESTRICT_FUSE` | students can't use FUSE mounts |
 | **`/tmp` + `/dev/shm` mounts** | SUID/device tricks; a `/tmp`-fill DoS | `HARDENING_HARDEN_TMP`, `HARDENING_TMP_SIZE`, `HARDENING_TMP_NOEXEC` | `/tmp` noexec is **off** by default (breaks pip/node-gyp builds) |
-| **Inbound firewall (ufw)** | Hosting a public server port | `ENABLE_UFW`, `UFW_EXTRA_ALLOW` | **off** here — the VPS has an external/provider firewall; flip to `yes` for a host firewall too |
 | **Per-user disk quota** | One student filling the disk for all | `ENABLE_HOME_QUOTA`, `QUOTA_SOFT`/`QUOTA_HARD` | **on**, 3 GB soft / 4 GB hard. Needs one reboot to activate — see below |
 
 > **Reboot once after the first run.** `/tmp` tmpfs, `/proc` hidepid, and some sysctls fully apply on the next boot (the build already recommends a reboot).
