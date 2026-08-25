@@ -35,7 +35,7 @@ backend  = systemd
 maxretry = 5
 findtime = 10m
 bantime  = 1h
-# Never ban these (e.g. the PRTG probe, admin jump hosts). loopback is implicit.
+# Never ban these (e.g. admin jump hosts). loopback is implicit.
 ignoreip = 127.0.0.1/8 ::1 ${FAIL2BAN_IGNORE_IPS:-}
 EOF
 systemctl enable --now fail2ban
