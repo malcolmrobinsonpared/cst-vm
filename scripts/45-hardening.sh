@@ -32,7 +32,16 @@ to_kb() {
 # 'usrquota' mount option present is NOT the same thing: on a root filesystem
 # the boot-time quotaon frequently doesn't run, leaving the option set while
 # quota is off (setquota then fails with 'aquota.user' missing).
-quota_active() { quotaon -pu "$1" 2>/dev/null | grep -q 'is on'; }
+#
+# Capture-then-grep rather than a pipe: the quota tools print a harmless
+# "Cannot stat() mounted device tmpfs" warning and exit non-zero, which under
+# 'set -o pipefail' would poison a `quotaon -pu | grep` pipeline and give a
+# false negative even when quota is on. `|| true` keeps set -e happy.
+quota_active() {
+  local status
+  status="$(quotaon -pu "$1" 2>/dev/null)" || true
+  grep -q 'is on' <<<"${status}"
+}
 
 # Make quota active on $1, self-activating if only the mount option is set.
 # Try quotaon (works when the ext4 quota feature or an existing quota file is in
@@ -61,6 +70,42 @@ apply_student_quotas() {
       && n=$(( n + 1 )) || warn "  setquota failed for ${u}"
   done < <(student_homes)
   log "  applied to ${n} students on ${mp} (${fstype})"
+}
+
+# This filesystem uses EXTERNAL quota files (no ext4 'quota' feature), so the
+# kernel mounts it with "Quota mode: none" and quota is OFF after every boot —
+# and this box reboots nightly. Install a oneshot that turns quota back on at
+# boot so enforcement survives reboots without a manual stage-45 re-run.
+QUOTA_BOOT_UNIT=/etc/systemd/system/student-quota.service
+install_quota_boot_unit() {
+  local mp="$1" qon tmp
+  qon="$(command -v quotaon || echo /usr/sbin/quotaon)"
+  tmp="$(mktemp)"
+  cat >"${tmp}" <<EOF
+[Unit]
+Description=Enable per-user disk quota on ${mp} (managed by provision.sh)
+After=local-fs.target
+ConditionPathExists=${mp%/}/aquota.user
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Turn quota on (tolerate the harmless tmpfs-stat warning and an already-on
+# state), then confirm it actually came on so a real failure surfaces.
+ExecStart=/bin/sh -c '${qon} -u ${mp} 2>/dev/null || true; ${qon} -pu ${mp} 2>/dev/null | grep -q "is on"'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  if write_if_changed "${tmp}" "${QUOTA_BOOT_UNIT}" 0644; then
+    systemctl daemon-reload || true
+  fi
+  systemctl enable student-quota.service >/dev/null 2>&1 \
+    || warn "  could not enable student-quota.service (quota won't auto-reactivate on reboot)"
+}
+remove_quota_boot_unit() {
+  systemctl disable --now student-quota.service 2>/dev/null || true
+  if ensure_absent "${QUOTA_BOOT_UNIT}"; then systemctl daemon-reload || true; fi
 }
 
 # List home directories of everyone in the students group.
@@ -346,6 +391,13 @@ if yes "${ENABLE_HOME_QUOTA}"; then
         ;;
     esac
   fi
+
+  # Whichever path activated quota, make it persist across the nightly reboot.
+  if quota_active "${mp}"; then
+    install_quota_boot_unit "${mp}"
+  else
+    remove_quota_boot_unit
+  fi
 else
   # Disabled -> zero any live limits, quotaoff, and strip usrquota from fstab.
   mp="$(df --output=target /home 2>/dev/null | tail -1)"
@@ -358,6 +410,7 @@ else
     done < <(student_homes)
     quotaoff "${mp}" 2>/dev/null || true
   fi
+  remove_quota_boot_unit
   if unset_fstab_opt "$mp" usrquota; then
     warn "quota: removed 'usrquota' from ${mp} in /etc/fstab (fully reverts on reboot)."
   fi

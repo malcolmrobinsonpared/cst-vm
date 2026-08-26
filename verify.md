@@ -33,6 +33,8 @@ grep TMOUT /etc/profile.d/99-idle-timeout.sh   # idle logout configured
 # disk quotas (after the reboot + second stage-45 run)
 sudo repquota -s /              # per-user usage vs 3G/4G limits
 sudo quota -s -u 28jane.doe     # one student's limit
+sudo quotaon -pu /              # "user quota on / ... is on"  (ignore the tmpfs-stat warning)
+systemctl is-enabled student-quota.service   # "enabled" — reactivates quota on the nightly reboot
 
 # maintenance, welcome, endpoint
 timedatectl | grep 'Time zone'                             # local timezone set
