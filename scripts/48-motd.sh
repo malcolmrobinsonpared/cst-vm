@@ -15,7 +15,6 @@ fi
 
 log "writing /etc/motd (student welcome)"
 cat >/etc/motd <<EOF
-
   =============================================================================
     Welcome to the PARED student dev server. Please note:
   =============================================================================
@@ -44,6 +43,17 @@ EOF
 # (privacy + a little login latency) while leaving the rest of the MOTD alone.
 if [[ -f /etc/default/motd-news ]]; then
   sed -i 's/^ENABLED=.*/ENABLED=0/' /etc/default/motd-news || true
+fi
+
+# pam_motd runs the scripts in /etc/update-motd.d/ at every login and prints
+# their output (the "Welcome to Ubuntu ...", system-info, and updates-available
+# banners) BEFORE our static /etc/motd. Strip their execute bit so only our
+# welcome text shows. chmod -x is idempotent and reversible (chmod +x restores
+# the stock behaviour), and it leaves the files in place for reference.
+if [[ -d /etc/update-motd.d ]]; then
+  chmod -x /etc/update-motd.d/* 2>/dev/null || true
+  # Clear any banner pam already cached for the next login.
+  : >/run/motd.dynamic 2>/dev/null || true
 fi
 
 log "motd stage complete"
