@@ -28,6 +28,41 @@ to_kb() {
   esac
 }
 
+# True only when user quota is actually ACTIVE on mountpoint $1. Having the
+# 'usrquota' mount option present is NOT the same thing: on a root filesystem
+# the boot-time quotaon frequently doesn't run, leaving the option set while
+# quota is off (setquota then fails with 'aquota.user' missing).
+quota_active() { quotaon -pu "$1" 2>/dev/null | grep -q 'is on'; }
+
+# Make quota active on $1, self-activating if only the mount option is set.
+# Try quotaon (works when the ext4 quota feature or an existing quota file is in
+# use); if still off, build the old-style quota file with quotacheck (-m: don't
+# remount the live root fs read-only) and turn it on. Returns 0 iff now active.
+ensure_quota_active() {
+  local mp="$1"
+  quota_active "$mp" && return 0
+  quotaon "$mp" 2>/dev/null || true
+  quota_active "$mp" && return 0
+  quotacheck -cum "$mp" 2>/dev/null || true
+  quotaon "$mp" 2>/dev/null || true
+  quota_active "$mp"
+}
+
+# Stamp each student's soft/hard limit onto the (already active) quota on $1.
+# setquota re-applies every run, so changed QUOTA_SOFT/HARD values converge.
+apply_student_quotas() {
+  local mp="$1" fstype="$2" soft_kb hard_kb u h n=0
+  soft_kb="$(to_kb "${QUOTA_SOFT}")"; hard_kb="$(to_kb "${QUOTA_HARD}")"
+  while IFS= read -r h; do
+    u="$(user_of_home "$h")"
+    [[ -n "$u" ]] || continue
+    setquota -u "$u" "${soft_kb}" "${hard_kb}" \
+      "${QUOTA_INODES_SOFT}" "${QUOTA_INODES_HARD}" "${mp}" \
+      && n=$(( n + 1 )) || warn "  setquota failed for ${u}"
+  done < <(student_homes)
+  log "  applied to ${n} students on ${mp} (${fstype})"
+}
+
 # List home directories of everyone in the students group.
 student_homes() {
   local members u
@@ -279,29 +314,30 @@ if yes "${ENABLE_HOME_QUOTA}"; then
   fstype="$(findmnt -no FSTYPE "$mp" 2>/dev/null || echo '')"
 
   if mount | grep -E "on ${mp} " | grep -qE 'usrquota|usrjquota'; then
-    # Quota is live on the mount — apply per-student limits (setquota re-applies
-    # each run, so changed QUOTA_SOFT/HARD values converge).
-    quotaon "${mp}" 2>/dev/null || true
-    soft_kb="$(to_kb "${QUOTA_SOFT}")"; hard_kb="$(to_kb "${QUOTA_HARD}")"
-    n=0
-    while IFS= read -r h; do
-      u="$(user_of_home "$h")"
-      [[ -n "$u" ]] || continue
-      setquota -u "$u" "${soft_kb}" "${hard_kb}" \
-        "${QUOTA_INODES_SOFT}" "${QUOTA_INODES_HARD}" "${mp}" \
-        && n=$(( n + 1 )) || warn "  setquota failed for ${u}"
-    done < <(student_homes)
-    log "  applied to ${n} students on ${mp} (${fstype})"
+    # The mount carries the usrquota option. Activate quota if the boot didn't
+    # (option present != quota on, especially on a root fs), then apply limits.
+    if ensure_quota_active "${mp}"; then
+      apply_student_quotas "${mp}" "${fstype}"
+    else
+      warn "  'usrquota' is on ${mp} but quota could not be activated; no limits set."
+      warn "  Inspect: quotaon -pu ${mp}  /  quotacheck -vcum ${mp}  /  dmesg | grep -i quota"
+    fi
   else
-    # Not live yet. On ext*, enable it in fstab now; a reboot then activates it.
+    # usrquota isn't on the live mount. On ext*, add it to fstab, then try to
+    # bring it in live with a remount so we can activate without a reboot; if
+    # the remount doesn't take (common for '/'), fall back to a reboot.
     case "$fstype" in
       ext2|ext3|ext4)
-        if set_fstab_opt "$mp" usrquota; then
-          warn "enabled 'usrquota' on ${mp} (${fstype}) in /etc/fstab."
-          warn ">> REBOOT, then re-run:  sudo bash provision.sh 45   <<  to apply the limits."
-          warn "   (boot auto-runs quotacheck/quotaon; this stage then sets each student's cap.)"
+        set_fstab_opt "$mp" usrquota \
+          && log "  added 'usrquota' to ${mp} (${fstype}) in /etc/fstab" \
+          || true
+        mount -o remount "$mp" 2>/dev/null || true
+        if mount | grep -E "on ${mp} " | grep -qE 'usrquota|usrjquota' \
+           && ensure_quota_active "${mp}"; then
+          apply_student_quotas "${mp}" "${fstype}"
         else
-          warn "'usrquota' already in fstab for ${mp} but quota isn't live — reboot, then re-run stage 45."
+          warn "quota option set but not live on ${mp} yet."
+          warn ">> REBOOT, then re-run:  sudo bash provision.sh 45   <<  to apply the limits."
         fi
         ;;
       *)

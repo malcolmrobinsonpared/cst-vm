@@ -55,7 +55,7 @@ etc/                               # config templates (@PLACEHOLDERS@ from confi
 
 6. If any rows had blank passwords, collect the generated ones from `/opt/cst-vm/student-credentials.txt`, distribute, then delete the file.
 
-7. Reboot after the first full run. Then, to activate disk quotas, run stage 45 once more (`sudo bash provision.sh 45`) — it applies each student's home-dir limit now that the reboot has enabled quotas. Finally, verify (below).
+7. Reboot after the first full run, then re-run stage 45 once (`sudo bash provision.sh 45`) to activate disk quotas. The reboot is only so the root filesystem mounts with the `usrquota` option; stage 45 then runs `quotacheck`/`quotaon` itself and applies each student's home-dir limit. Finally, verify (below).
 
 **Updating the roster later:** edit the CSV and re-run stage 10 (`sudo bash provision.sh 10`). New rows are created, rows you removed are **disabled** (home kept) or **deleted** per `REMOVED_ACCOUNT_ACTION`, and a student you add back is re-enabled. Existing passwords are left untouched unless you pass `--reset-passwords`.
 
@@ -99,7 +99,7 @@ A shared box gives ~20 students a shell, compilers, and network — you can't st
 
 > **Reboot once after the first run.** `/tmp` tmpfs, `/proc` hidepid, and some sysctls fully apply on the next boot (the build already recommends a reboot).
 >
-> **Disk quotas need that reboot + a second stage-45 run.** On a stock Ubuntu install `/home` is on the root filesystem, so quotas can't be switched on live. First `provision.sh` run: stage 45 adds `usrquota` to `/etc/fstab` (backing it up) and tells you to reboot. After the reboot the kernel activates quota automatically; then run `sudo bash provision.sh 45` once more to apply each student's 3 GB/4 GB limit. New students added later get their limit on the next stage-45 run — no reboot needed after the first time.
+> **Disk quotas need that reboot + a second stage-45 run.** On a stock Ubuntu install `/home` is on the root filesystem, so the `usrquota` mount option can't be added to a live `/`. First `provision.sh` run: stage 45 adds `usrquota` to `/etc/fstab` (backing it up) and tells you to reboot. After the reboot the root filesystem mounts with `usrquota`; run `sudo bash provision.sh 45` once more and it activates quota itself (`quotacheck`/`quotaon` — the boot does **not** do this for the root fs) and applies each student's 3 GB/4 GB limit. New students added later get their limit on the next stage-45 run — no reboot needed after the first time.
 
 ## Hosting dev servers
 
