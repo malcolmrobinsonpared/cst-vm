@@ -62,7 +62,12 @@ set_password() { # user plaintext
 }
 gen_pw() {
   local charset='ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
-  LC_ALL=C tr -dc "${charset}" </dev/urandom | head -c "${PW_LENGTH}"
+  # `head` closes the pipe after PW_LENGTH bytes, which SIGPIPE-kills `tr`
+  # (exit 141). Under `set -o pipefail` that would fail the whole pipeline and
+  # `set -e` would abort the run on every blank-password row. Feed `tr` via
+  # process substitution so the pipeline is just `head` (clean exit 0); `tr`'s
+  # SIGPIPE is no longer part of the pipeline status.
+  head -c "${PW_LENGTH}" < <(LC_ALL=C tr -dc "${charset}" </dev/urandom)
 }
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 
