@@ -47,11 +47,16 @@ fi
 
 # pam_motd runs the scripts in /etc/update-motd.d/ at every login and prints
 # their output (the "Welcome to Ubuntu ...", system-info, and updates-available
-# banners) BEFORE our static /etc/motd. Strip their execute bit so only our
-# welcome text shows. chmod -x is idempotent and reversible (chmod +x restores
-# the stock behaviour), and it leaves the files in place for reference.
+# banners) BEFORE our static /etc/motd. Strip their execute bit so run-parts
+# skips them and only our welcome text shows. The files stay in place for
+# reference; `chmod +x` on them restores the stock behaviour.
+#
+# NOTE: use the explicit class form `a-x`, NOT bare `-x`. A bare `-x` is masked
+# by the login umask (HARDENING_UMASK=077 here), so it clears only the owner
+# bit and leaves group/other execute set — run-parts still runs the script.
+# `a-x` names all three classes and ignores the umask.
 if [[ -d /etc/update-motd.d ]]; then
-  chmod -x /etc/update-motd.d/* 2>/dev/null || true
+  chmod a-x /etc/update-motd.d/* 2>/dev/null || true
   # Clear any banner pam already cached for the next login.
   : >/run/motd.dynamic 2>/dev/null || true
 fi
