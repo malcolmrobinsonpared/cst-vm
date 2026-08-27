@@ -87,21 +87,47 @@ if [[ -n "${SWAP_SIZE:-}" ]]; then
     # either fails to swapon or corrupts. Left to the admin deliberately.
     warn "swap: ${SWAP_FILE} lives on ${swap_fstype}, which needs a hand-built swap area; skipping."
   elif (( swap_have != swap_want )); then
-    log "swap: creating ${SWAP_SIZE} swapfile at ${SWAP_FILE}"
+    # Resize = swapoff + recreate. There is no in-place grow: the kernel reads
+    # the swap header once at swapon, so appending to a live swapfile does
+    # nothing (and mkswap'ing one is corruption).
+    (( swap_have )) \
+      && log "swap: resizing ${SWAP_FILE} ($(( swap_have / 1024 / 1024 ))M -> ${SWAP_SIZE})" \
+      || log "swap: creating ${SWAP_SIZE} swapfile at ${SWAP_FILE}"
     # Room for the new file, counting the space the old one gives back. Keep a
     # 1 GiB cushion so we never fill the disk the student homes share.
     swap_avail=$(( $(df --output=avail -B1 "$(dirname "${SWAP_FILE}")" | tail -1) + swap_have ))
+    swap_ok=1
     if (( swap_avail < swap_want + 1024 * 1024 * 1024 )); then
       warn "  only $(( swap_avail / 1024 / 1024 ))M free where ${SWAP_FILE} would go; skipping."
-    else
-      swapoff "${SWAP_FILE}" 2>/dev/null || true
+      swap_ok=0
+    elif swap_is_on "${SWAP_FILE}"; then
+      # swapoff has to fault every swapped-out page back into RAM, so it fails
+      # when there isn't room for them. It MUST succeed before we touch the
+      # file: unlinking a still-active swapfile succeeds but doesn't free its
+      # blocks until reboot, so we'd silently pay for both copies.
+      swapoff "${SWAP_FILE}" || {
+        warn "  cannot swapoff ${SWAP_FILE} — too little free RAM to page it back in."
+        warn "  Keeping the existing $(( swap_have / 1024 / 1024 ))M file. Reboot (or free memory), then re-run stage 00."
+        swap_ok=0
+      }
+    fi
+    if (( swap_ok )); then
       rm -f "${SWAP_FILE}"
-      # fallocate is instant on ext4; dd is the portable fallback.
-      fallocate -l "${swap_want}" "${SWAP_FILE}" 2>/dev/null \
-        || dd if=/dev/zero of="${SWAP_FILE}" bs=1M count=$(( swap_want / 1024 / 1024 )) status=none
-      chmod 0600 "${SWAP_FILE}"
-      mkswap "${SWAP_FILE}" >/dev/null
-      swapon "${SWAP_FILE}" || warn "  swapon ${SWAP_FILE} failed"
+      # fallocate is instant on ext4; dd is the portable fallback. A failure
+      # here warns rather than aborting the rest of provisioning.
+      if fallocate -l "${swap_want}" "${SWAP_FILE}" 2>/dev/null \
+         || dd if=/dev/zero of="${SWAP_FILE}" bs=1M count=$(( swap_want / 1024 / 1024 )) status=none
+      then
+        chmod 0600 "${SWAP_FILE}"
+        if mkswap "${SWAP_FILE}" >/dev/null; then
+          swapon "${SWAP_FILE}" || warn "  swapon ${SWAP_FILE} failed"
+        else
+          rm -f "${SWAP_FILE}"; warn "  mkswap ${SWAP_FILE} failed; no swap configured."
+        fi
+      else
+        rm -f "${SWAP_FILE}"
+        warn "  could not allocate ${SWAP_SIZE} at ${SWAP_FILE}; no swap configured."
+      fi
     fi
   elif ! swap_is_on "${SWAP_FILE}"; then
     # Right size but not active (e.g. fstab entry added but never mounted).
@@ -110,6 +136,47 @@ if [[ -n "${SWAP_SIZE:-}" ]]; then
 
   if [[ -f "${SWAP_FILE}" ]]; then
     set_fstab_swap "${SWAP_FILE}" && log "  set ${SWAP_FILE} entry in /etc/fstab" || true
+  fi
+
+  # --- one swapfile, not two --------------------------------------------------
+  # Ubuntu's installer (curtin) leaves its own /swap.img behind. Stacking ours on
+  # top of it doubles the disk swap costs and makes SWAP_SIZE a lie about how
+  # much swap the box actually has, so take those over: swapoff, drop the fstab
+  # line, delete the file. Only ever REGULAR FILES — swap partitions and zram
+  # devices are left strictly alone. Gated on our own swap being live, so this
+  # can never leave the box with no swap at all.
+  # One-way: clearing SWAP_SIZE later removes our file but can't restore theirs.
+  if [[ "${SWAP_REPLACE_EXISTING:-yes}" == "yes" ]] && swap_is_on "${SWAP_FILE}"; then
+    swap_others=()
+    # Live file-backed swap areas (TYPE tells file apart from partition/zram).
+    while read -r sname stype _; do
+      if [[ "${stype}" == "file" && "${sname}" != "${SWAP_FILE}" ]]; then
+        swap_others+=("${sname}")
+      fi
+    done < <(swapon --show=NAME,TYPE --noheadings 2>/dev/null || true)
+    # Plus fstab swap entries that ARE an existing regular file right now — this
+    # catches one that's listed but not currently swapped on. The -f test is the
+    # whole safety net: UUID=/LABEL= forms, block devices and entries pointing at
+    # something absent (a disk not attached yet) all fail it and are left alone.
+    while read -r sname; do
+      if [[ "${sname}" != "${SWAP_FILE}" && -f "${sname}" ]]; then
+        swap_others+=("${sname}")
+      fi
+    done < <(awk '!/^[[:space:]]*#/ && $3=="swap" {print $1}' "${FSTAB}")
+
+    swap_seen=" "
+    for sname in "${swap_others[@]:-}"; do
+      [[ -n "${sname}" ]] || continue
+      if [[ "${swap_seen}" == *" ${sname} "* ]]; then continue; fi   # both lists
+      swap_seen+="${sname} "
+      log "swap: taking over ${sname} (redundant with ${SWAP_FILE})"
+      if swap_is_on "${sname}" && ! swapoff "${sname}"; then
+        warn "  could not swapoff ${sname}; left in place (retry after a reboot)"
+        continue
+      fi
+      unset_fstab_swap "${sname}" && log "  removed ${sname} from /etc/fstab" || true
+      [[ -f "${sname}" ]] && ensure_absent "${sname}" && log "  deleted ${sname}" || true
+    done
   fi
 else
   if swap_is_on "${SWAP_FILE}"; then

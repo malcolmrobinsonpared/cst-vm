@@ -107,7 +107,9 @@ Ubuntu server/cloud images ship with **no swap**, which on a box with ~20 shells
 
 - **It isn't extra RAM.** `CG_MEMORY_MAX` (3 GB) is still each student's hard ceiling — swap just gives cold pages somewhere to go so an idle session isn't holding RAM the active ones need.
 - **Per-user swap is capped too.** `CG_MEMORY_SWAP_MAX` (1 GB) goes into the `user-.slice` drop-in as `MemorySwapMax`. Without it `MemoryMax` bounds only *resident* memory and one student could occupy the entire swapfile.
+- **It replaces the installer's swapfile.** Ubuntu's curtin installer leaves its own `/swap.img` behind; left alone, the two stack and the box has neither the size nor the disk footprint `SWAP_SIZE` claims. Once ours is live, stage 00 swaps `/swap.img` off, drops its fstab line and deletes it (`SWAP_REPLACE_EXISTING="no"` to keep both). Only ever **regular files** — swap partitions, `UUID=`/`LABEL=` entries and zram are never touched. Not reversible: clearing `SWAP_SIZE` later removes ours, not theirs.
 - **Convergent, like everything else.** Change `SWAP_SIZE` and re-run stage 00 to resize; set it to `""` and re-run to swap off, drop the fstab entry, and delete the file. Re-running unchanged is a no-op. Needs `SWAP_SIZE` + 1 GB free, and skips (with a warning) on btrfs/zfs, which need a hand-built swap area.
+- **Resizing means `swapoff` first** — there's no in-place grow, since the kernel reads the swap header once at `swapon`. `swapoff` has to fault every swapped-out page back into RAM, so it can fail when memory is tight; the stage then keeps the existing file and tells you to retry. Cheapest time to resize is just after the 04:00 reboot, when swap is empty.
 - Changing `CG_MEMORY_SWAP_MAX` takes a stage-20 re-run (`sudo bash provision.sh 20`); it applies to sessions started after that.
 
 ## Hosting dev servers

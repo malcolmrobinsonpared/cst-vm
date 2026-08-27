@@ -7,9 +7,10 @@ getent passwd 28jane.doe         # a roster username
 sudo chage -l 28jane.doe         # confirm password-expiry (first-login change)
 
 # swap (stage 00)
-swapon --show                                  # /swapfile, 4G, used > 0 once under load
-free -h                                        # Swap: row is non-zero
-grep swap /etc/fstab                           # managed entry -> survives the reboot
+swapon --show                                  # exactly ONE file: /swapfile, 4G
+free -h                                        # Swap: total ~4G, not 8G
+grep swap /etc/fstab                           # managed /swapfile entry, no /swap.img
+ls -l /swap.img 2>&1                           # "No such file" - installer's copy taken over
 
 # cgroup caps on a live student session (log one in first)
 loginctl list-users
