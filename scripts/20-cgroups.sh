@@ -20,6 +20,9 @@ CPUWeight=${CG_CPU_WEIGHT}
 MemoryAccounting=yes
 MemoryHigh=${CG_MEMORY_HIGH}
 MemoryMax=${CG_MEMORY_MAX}
+# MemoryMax bounds resident memory only; without this a single user could take
+# the whole swapfile (see SWAP_SIZE in config.env) and thrash the box.
+MemorySwapMax=${CG_MEMORY_SWAP_MAX}
 TasksAccounting=yes
 TasksMax=${CG_TASKS_MAX}
 IOAccounting=yes
@@ -34,6 +37,7 @@ cat >/etc/systemd/system/user-0.slice.d/00-exempt.conf <<'EOF'
 CPUQuota=
 MemoryHigh=infinity
 MemoryMax=infinity
+MemorySwapMax=infinity
 TasksMax=infinity
 EOF
 

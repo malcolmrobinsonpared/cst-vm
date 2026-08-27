@@ -57,6 +57,72 @@ if [[ -n "${TIMEZONE:-}" ]]; then
   timedatectl set-timezone "${TIMEZONE}" || warn "could not set timezone ${TIMEZONE}"
 fi
 
+# --- swap file ---------------------------------------------------------------
+# Ubuntu server/cloud images have no swap at all. Symmetric like the rest of the
+# build: SWAP_SIZE="" swaps off, drops the fstab entry and deletes the file.
+# Only the size is convergent — a changed SWAP_SIZE recreates the file, an
+# unchanged one is a no-op (never a re-mkswap, which would churn the disk).
+
+# Sizes like 4G / 512M / 1048576 (bare = bytes) -> bytes.
+size_to_bytes() {
+  local v="$1" n="${1%[GgMmKk]}" u="${1: -1}"
+  case "$u" in
+    G|g) echo $(( n * 1024 * 1024 * 1024 )) ;;
+    M|m) echo $(( n * 1024 * 1024 )) ;;
+    K|k) echo $(( n * 1024 )) ;;
+    *)   echo "$v" ;;
+  esac
+}
+swap_is_on() { swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$1"; }
+
+SWAP_FILE="${SWAP_FILE:-/swapfile}"
+if [[ -n "${SWAP_SIZE:-}" ]]; then
+  swap_want="$(size_to_bytes "${SWAP_SIZE}")"
+  swap_have=0
+  [[ -f "${SWAP_FILE}" ]] && swap_have="$(stat -c %s "${SWAP_FILE}")"
+  swap_fstype="$(findmnt -no FSTYPE -T "${SWAP_FILE}" 2>/dev/null || echo '')"
+
+  if [[ "${swap_fstype}" == "btrfs" || "${swap_fstype}" == "zfs" ]]; then
+    # Both need a specially-created (nocow / zvol) swap area; a plain file here
+    # either fails to swapon or corrupts. Left to the admin deliberately.
+    warn "swap: ${SWAP_FILE} lives on ${swap_fstype}, which needs a hand-built swap area; skipping."
+  elif (( swap_have != swap_want )); then
+    log "swap: creating ${SWAP_SIZE} swapfile at ${SWAP_FILE}"
+    # Room for the new file, counting the space the old one gives back. Keep a
+    # 1 GiB cushion so we never fill the disk the student homes share.
+    swap_avail=$(( $(df --output=avail -B1 "$(dirname "${SWAP_FILE}")" | tail -1) + swap_have ))
+    if (( swap_avail < swap_want + 1024 * 1024 * 1024 )); then
+      warn "  only $(( swap_avail / 1024 / 1024 ))M free where ${SWAP_FILE} would go; skipping."
+    else
+      swapoff "${SWAP_FILE}" 2>/dev/null || true
+      rm -f "${SWAP_FILE}"
+      # fallocate is instant on ext4; dd is the portable fallback.
+      fallocate -l "${swap_want}" "${SWAP_FILE}" 2>/dev/null \
+        || dd if=/dev/zero of="${SWAP_FILE}" bs=1M count=$(( swap_want / 1024 / 1024 )) status=none
+      chmod 0600 "${SWAP_FILE}"
+      mkswap "${SWAP_FILE}" >/dev/null
+      swapon "${SWAP_FILE}" || warn "  swapon ${SWAP_FILE} failed"
+    fi
+  elif ! swap_is_on "${SWAP_FILE}"; then
+    # Right size but not active (e.g. fstab entry added but never mounted).
+    swapon "${SWAP_FILE}" || warn "  swapon ${SWAP_FILE} failed"
+  fi
+
+  if [[ -f "${SWAP_FILE}" ]]; then
+    set_fstab_swap "${SWAP_FILE}" && log "  set ${SWAP_FILE} entry in /etc/fstab" || true
+  fi
+else
+  if swap_is_on "${SWAP_FILE}"; then
+    log "swap: SWAP_SIZE cleared — disabling ${SWAP_FILE}"
+    # Needs free RAM to page everything back in; if it can't, leave the file be.
+    swapoff "${SWAP_FILE}" || warn "  swapoff ${SWAP_FILE} failed (still in use); leaving it in place"
+  fi
+  if ! swap_is_on "${SWAP_FILE}"; then
+    unset_fstab_swap "${SWAP_FILE}" && log "swap: removed ${SWAP_FILE} entry from /etc/fstab" || true
+    ensure_absent "${SWAP_FILE}" && log "swap: removed ${SWAP_FILE}" || true
+  fi
+fi
+
 # --- nightly maintenance reboot ---------------------------------------------
 # Applies pending kernel/security updates and resets shared state. A systemd
 # timer (OnCalendar honours the timezone above) rather than user cron.

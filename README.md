@@ -12,7 +12,7 @@ config.env                         # ← edit this first
 students.csv.example               # ← copy to your roster CSV (usernames + passwords)
 provision.sh                       # entrypoint; runs the stages in order
 scripts/
-  00-base.sh                       # apt upgrade, base pkgs, unattended-upgrades, fail2ban
+  00-base.sh                       # apt upgrade, base pkgs, unattended-upgrades, fail2ban, swapfile
   10-users.sh                      # reconcile student accounts from the CSV roster
   20-cgroups.sh                    # per-user systemd slice caps + PAM ulimits
   30-toolchains.sh                 # Go, Node.js, Python3, Neovim (system-wide)
@@ -100,6 +100,15 @@ A shared box gives ~20 students a shell, compilers, and network — you can't st
 > **Reboot once after the first run.** `/tmp` tmpfs, `/proc` hidepid, and some sysctls fully apply on the next boot (the build already recommends a reboot).
 >
 > **Disk quotas need that reboot + a second stage-45 run.** On a stock Ubuntu install `/home` is on the root filesystem, so the `usrquota` mount option can't be added to a live `/`. First `provision.sh` run: stage 45 adds `usrquota` to `/etc/fstab` (backing it up) and tells you to reboot. After the reboot the root filesystem mounts with `usrquota`; run `sudo bash provision.sh 45` once more and it activates quota itself (`quotacheck`/`quotaon` — the boot does **not** do this for the root fs) and applies each student's 3 GB/4 GB limit. Because Ubuntu's root fs uses *external* quota files (it's not built with the ext4 `quota` feature), the kernel mounts it with quota **off** on every boot; stage 45 installs a `student-quota.service` oneshot that turns quota back on at boot so enforcement survives the nightly reboot. New students added later get their limit on the next stage-45 run — no reboot needed after the first time.
+
+## Swap
+
+Ubuntu server/cloud images ship with **no swap**, which on a box with ~20 shells means the kernel's only relief under pressure is dropping page cache and then OOM-killing. Stage 00 creates a **4 GB swapfile** at `/swapfile` (`SWAP_SIZE` / `SWAP_FILE` in `config.env`), `mkswap`s it, swaps it on, and adds a managed `/etc/fstab` entry so it survives the nightly reboot.
+
+- **It isn't extra RAM.** `CG_MEMORY_MAX` (3 GB) is still each student's hard ceiling — swap just gives cold pages somewhere to go so an idle session isn't holding RAM the active ones need.
+- **Per-user swap is capped too.** `CG_MEMORY_SWAP_MAX` (1 GB) goes into the `user-.slice` drop-in as `MemorySwapMax`. Without it `MemoryMax` bounds only *resident* memory and one student could occupy the entire swapfile.
+- **Convergent, like everything else.** Change `SWAP_SIZE` and re-run stage 00 to resize; set it to `""` and re-run to swap off, drop the fstab entry, and delete the file. Re-running unchanged is a no-op. Needs `SWAP_SIZE` + 1 GB free, and skips (with a warning) on btrfs/zfs, which need a hand-built swap area.
+- Changing `CG_MEMORY_SWAP_MAX` takes a stage-20 re-run (`sudo bash provision.sh 20`); it applies to sessions started after that.
 
 ## Hosting dev servers
 

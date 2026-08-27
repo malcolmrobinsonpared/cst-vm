@@ -73,6 +73,27 @@ unset_fstab_mount() {
   _fstab_commit "$t"
 }
 
+# set_fstab_swap <swapfile> / unset_fstab_swap <swapfile>
+#   Same idea for a swap entry, but keyed on the DEVICE field: a swap line's
+#   field 2 is the placeholder "none", so matching on it the way set_fstab_mount
+#   does would collide with every other "none" entry. Matching $1==<swapfile> &&
+#   $3=="swap" also means the installer's own `/swapfile none swap sw 0 0` gets
+#   replaced rather than duplicated, and other swap devices are left alone.
+#   0 if fstab changed.
+set_fstab_swap() {
+  local f="$1" want="$1 none swap sw 0 0 ${FSTAB_MARK}" t; t="$(mktemp)"
+  awk -v f="$f" '!/^[[:space:]]*#/ && $1==f && $3=="swap" {next} {print}' "$FSTAB" > "$t"
+  printf '%s\n' "$want" >> "$t"
+  if cmp -s "$t" "$FSTAB"; then rm -f "$t"; return 1; fi
+  _fstab_commit "$t"
+}
+unset_fstab_swap() {
+  local f="$1" t; t="$(mktemp)"
+  awk -v f="$f" '!/^[[:space:]]*#/ && $1==f && $3=="swap" {next} {print}' "$FSTAB" > "$t"
+  if cmp -s "$t" "$FSTAB"; then rm -f "$t"; return 1; fi
+  _fstab_commit "$t"
+}
+
 # set_fstab_opt <mountpoint> <opt> / unset_fstab_opt <mountpoint> <opt>
 #   Add/remove ONE option in field 4 of an EXISTING fstab entry (used for
 #   usrquota on '/', which modifies the distro's own line rather than adding a
