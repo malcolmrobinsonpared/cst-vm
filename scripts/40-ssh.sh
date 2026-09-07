@@ -9,11 +9,16 @@ apt-get install -y --no-install-recommends openssh-server
 
 log "writing /etc/ssh/sshd_config.d/50-students.conf"
 dest=/etc/ssh/sshd_config.d/50-students.conf
+# Derived, not its own config knob, so it can't contradict FW_BLOCK_IPV6: with
+# the v6 stack off (scripts/46-firewall.sh) sshd shouldn't try to bind :: at all.
+ssh_address_family="any"
+if [[ "${FW_BLOCK_IPV6:-no}" == "yes" ]]; then ssh_address_family="inet"; fi
 tmp="$(mktemp)"
 sed \
   -e "s|@SSH_PORT@|${SSH_PORT}|g" \
   -e "s|@SSH_ALLOW_GROUPS@|${SSH_ALLOW_GROUPS}|g" \
   -e "s|@SSH_PASSWORD_AUTH@|${SSH_PASSWORD_AUTH}|g" \
+  -e "s|@SSH_ADDRESS_FAMILY@|${ssh_address_family}|g" \
   "${HERE}/etc/ssh/sshd_config.d/50-students.conf" > "${tmp}"
 
 # Keep a copy of the current drop-in so we can roll back if the new one won't

@@ -42,6 +42,29 @@ sudo quota -s -u 28jane.doe     # one student's limit
 sudo quotaon -pu /              # "user quota on / ... is on"  (ignore the tmpfs-stat warning)
 systemctl is-enabled student-quota.service   # "enabled" — reactivates quota on the nightly reboot
 
+# firewall (stage 46)
+sudo ufw status verbose          # active; deny in / allow out; rules in order
+#   expect, in this order:  22/tcp ALLOW IN | 3000:3999/tcp ALLOW IN
+#                           10.90.196.1 ALLOW OUT | 10.90.196.0/24 REJECT OUT
+sudo cat /var/lib/cst-vm/firewall.spec         # the rule set stage 46 last applied
+curl -sSI --max-time 5 https://ubuntu.com | head -1   # wider network still reachable
+ping -c1 -W2 10.90.196.1                       # the router: allowed
+ping -c1 -W2 10.90.196.50                      # a neighbour on the segment: refused
+getent hosts github.com                        # DNS still resolves (check FW_SUBNET_ALLOW_HOSTS if not)
+
+# ipv6 is off (stage 46)
+ip -6 addr                                     # no addresses at all, not even ::1
+sysctl net.ipv6.conf.all.disable_ipv6          # = 1
+sudo ip6tables -S ufw6-user-output              # -A ufw6-user-output -j DROP
+sudo sshd -T | grep -i addressfamily            # inet — sshd isn't trying to bind ::
+ping -6 -c1 -W2 ::1 2>&1 | tail -1              # fails: the stack is down
+python3 -m http.server 3000 --bind 0.0.0.0 &    # a student's dev server, then:
+curl -sS --max-time 5 -o /dev/null -w 'localhost over v4: %{http_code}\n' http://localhost:3000
+kill %1                                         # ^ ::1 is gone but localhost still works
+# from another machine ON 10.90.196.0/24 — inbound is unaffected by the egress rules:
+#   ssh <user>@<vm-ip>            still works
+#   curl http://<vm-ip>:3000      still reaches a student's dev server
+
 # maintenance, welcome, endpoint
 timedatectl | grep 'Time zone'                             # local timezone set
 systemctl list-timers nightly-reboot.timer --no-pager      # next 04:00 reboot
