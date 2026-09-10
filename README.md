@@ -119,20 +119,20 @@ Ubuntu server/cloud images ship with **no swap**, which on a box with ~20 shells
 
 `scripts/46-firewall.sh` runs **ufw** and does two separate jobs. All of it is driven by the `FW_*` block in `config.env`; `ENABLE_FIREWALL="no"` + a stage-46 re-run removes the firewall entirely.
 
-**Inbound — default deny.** Only `FW_ALLOW_INBOUND_TCP` is opened: SSH (`SSH_PORT`) and the dev-server range `3000:3999` students are told to bind. `FW_ALLOW_INBOUND_FROM` narrows *who* may reach those ports (empty = anywhere on the SDN).
+**Inbound — default deny.** Only `FW_ALLOW_INBOUND_TCP` is opened: SSH (`SSH_PORT`) and the dev-server range `3000:3999` students are told to bind. `FW_ALLOW_INBOUND_FROM` narrows *who* may reach those ports — it's locked to the admin/peer subnets `10.24.4.0/24`, `10.24.16.0/24`, `10.24.99.0/24`, `10.1.99.0/24`, `10.16.99.0/24` and `10.8.99.0/24`; every other source is denied.
 
-**Outbound — everything except the box's own subnet.** The box sits on `10.90.196.0/24` alongside everything else on that segment, and ~20 students with a shell, a compiler and `nmap` can reach all of it. So egress stays wide open to the **wider network** (which is reached *through* the gateway) and is blocked to the local segment itself:
+**Outbound — everything except all of `10.0.0.0/8`.** ~20 students with a shell, a compiler and `nmap` sit on this LAN. So egress stays wide open to the **internet** and is blocked to *every* internal (RFC1918 10/8) network the box might otherwise reach:
 
 | Destination | Result |
 |-------------|--------|
-| `10.90.196.1` (the router) | **allowed** — and with it the whole wider network / internet behind it |
-| anything else in `10.90.196.0/24` | **rejected** — printers, APs, staff laptops, other servers on the segment |
-| any address outside `10.90.196.0/24` | allowed, exactly as before |
+| `10.90.196.1` (the gateway) | **allowed** — and with it the whole internet behind it |
+| anything else in `10.0.0.0/8` | **rejected** — printers, APs, staff laptops, other servers, other VLANs |
+| any address outside `10.0.0.0/8` (public internet) | allowed, exactly as before |
 
 Two things this deliberately does **not** break:
 
-- **Inbound connections from the local subnet still work, both directions.** ufw accepts established/related traffic ahead of these rules, so the reply packets flow normally. An admin at `10.90.196.x` can still SSH in, and a student's dev server is still reachable from a browser on the segment. The rules only govern connections *this box starts*.
-- **Nothing about internet access changes.** Traffic to anywhere off-segment is routed via `10.90.196.1`, which is explicitly allowed — apt, npm, `go install`, GitHub and the Sophos agent are unaffected.
+- **Inbound connections from the allowed subnets still work, both directions.** ufw accepts established/related traffic ahead of these rules, so the reply packets flow normally. An admin on one of the `FW_ALLOW_INBOUND_FROM` subnets can still SSH in, and a student's dev server is still reachable from a browser there — even though the box may not *initiate* traffic back into `10/8`. The egress rules only govern connections *this box starts*.
+- **Nothing about internet access changes.** Internet traffic has a public destination IP, which never matches the `10/8` rule; it's routed via `10.90.196.1`, which is explicitly allowed — apt, npm, `go install`, GitHub and the Sophos agent are unaffected.
 
 Configure it with:
 
@@ -161,7 +161,7 @@ Knock-on effects, all handled:
 
 It's a lever of its own, so it's honoured even with `ENABLE_FIREWALL="no"` — turning the firewall off doesn't quietly turn IPv6 back on, and vice versa.
 
-> **The one way to break this is an on-segment dependency you forgot to list.** If your DNS resolver, NTP server or APT mirror lives at another `10.90.196.x` address, add it to `FW_SUBNET_ALLOW_HOSTS` or it stops working. Stage 46 pre-flights this for you: it **aborts before changing anything** if the default gateway would be blocked (that would take the box off the network entirely) or if SSH isn't in the open-ports list (that would lock everyone out), and it **warns** if a configured resolver falls inside an isolated subnet.
+> **The one way to break this is an in-`10/8` dependency you forgot to list.** With all of `10.0.0.0/8` now blocked outbound, if your DNS resolver, NTP server or APT mirror lives at any `10.x` address other than the gateway, add it to `FW_SUBNET_ALLOW_HOSTS` or it stops working. Stage 46 pre-flights this for you: it **aborts before changing anything** if the default gateway would be blocked (that would take the box off the network entirely) or if SSH isn't in the open-ports list (that would lock everyone out), and it **warns** if a configured resolver falls inside an isolated subnet.
 
 Convergent like the rest of the build: the whole rule set is rendered to `/var/lib/cst-vm/firewall.spec` and only rebuilt when that spec changes — or when ufw has been switched off behind the script's back — so a plain re-run touches nothing. When it does rebuild it resets ufw first, so the live rules are exactly the config and never an accumulation of old ones. (`ufw reset` leaves the firewall *disabled*, i.e. unfiltered, for the moment it takes to re-add the rules, so there's no window where an SSH session can be cut off.)
 

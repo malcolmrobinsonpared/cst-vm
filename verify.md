@@ -44,12 +44,14 @@ systemctl is-enabled student-quota.service   # "enabled" — reactivates quota o
 
 # firewall (stage 46)
 sudo ufw status verbose          # active; deny in / allow out; rules in order
-#   expect, in this order:  22/tcp ALLOW IN | 3000:3999/tcp ALLOW IN
-#                           10.90.196.1 ALLOW OUT | 10.90.196.0/24 REJECT OUT
+#   expect:  22/tcp + 3000:3999/tcp ALLOW IN from each of the 6 admin subnets
+#            (10.24.4.0/24, 10.24.16.0/24, 10.24.99.0/24, 10.1.99.0/24,
+#             10.16.99.0/24, 10.8.99.0/24), then
+#            10.90.196.1 ALLOW OUT | 10.0.0.0/8 REJECT OUT
 sudo cat /var/lib/cst-vm/firewall.spec         # the rule set stage 46 last applied
-curl -sSI --max-time 5 https://ubuntu.com | head -1   # wider network still reachable
-ping -c1 -W2 10.90.196.1                       # the router: allowed
-ping -c1 -W2 10.90.196.50                      # a neighbour on the segment: refused
+curl -sSI --max-time 5 https://ubuntu.com | head -1   # internet still reachable
+ping -c1 -W2 10.90.196.1                       # the gateway: allowed
+ping -c1 -W2 10.24.4.10                         # any other 10/8 host: refused
 getent hosts github.com                        # DNS still resolves (check FW_SUBNET_ALLOW_HOSTS if not)
 
 # ipv6 is off (stage 46)
@@ -61,9 +63,10 @@ ping -6 -c1 -W2 ::1 2>&1 | tail -1              # fails: the stack is down
 python3 -m http.server 3000 --bind 0.0.0.0 &    # a student's dev server, then:
 curl -sS --max-time 5 -o /dev/null -w 'localhost over v4: %{http_code}\n' http://localhost:3000
 kill %1                                         # ^ ::1 is gone but localhost still works
-# from another machine ON 10.90.196.0/24 — inbound is unaffected by the egress rules:
+# from a machine ON one of the 6 allowed subnets — inbound is unaffected by the egress rules:
 #   ssh <user>@<vm-ip>            still works
 #   curl http://<vm-ip>:3000      still reaches a student's dev server
+# from any OTHER subnet, SSH and 3000:3999 are refused (default-deny inbound).
 
 # maintenance, welcome, endpoint
 timedatectl | grep 'Time zone'                             # local timezone set
