@@ -28,6 +28,17 @@ goose --version && sqlc version && bootdev version   # go tools on PATH
 # ssh policy
 sudo sshd -T | grep -Ei 'allowgroups|permitrootlogin|x11forwarding|passwordauthentication'
 
+# prtg monitoring account (stage 42)
+getent passwd prtg                              # exists, shell /bin/bash, own home
+id prtg                                         # group=prtg; NOT students, NOT sudo
+sudo passwd -S prtg                             # "prtg L ..." — password locked (key-only)
+sudo head -1 ~prtg/.ssh/authorized_keys         # managed-by header
+sudo grep -o 'from="[^"]*"' ~prtg/.ssh/authorized_keys   # from="10.90.196.53" — key pinned
+sudo sshd -T | grep -i allowgroups              # includes 'prtg'
+sudo awk '/ignoreip/' /etc/fail2ban/jail.d/sshd.local    # probe IP in the ignore list
+sudo ufw status | grep 10.90.196.53             # 22 + 3000:3999 ALLOW IN from the probe
+#   from the probe itself:  ssh -i <privkey> prtg@<vm-ip> 'cat /proc/loadavg'  # the SSH-sensor path
+
 # hardening (stage 45)
 sudo grep -H . /etc/systemd/logind.conf.d/50-hardening.conf   # KillUserProcesses=yes
 sudo sysctl kernel.dmesg_restrict kernel.unprivileged_bpf_disabled kernel.apparmor_restrict_unprivileged_userns

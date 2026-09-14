@@ -18,6 +18,7 @@ scripts/
   30-toolchains.sh                 # Go, Node.js, Python3, Neovim (system-wide)
   35-packages.sh                   # common Python/Node/Go packages + boot.dev tooling
   40-ssh.sh                        # sshd: group-gated access, hardened, no X11
+  42-prtg.sh                       # locked-down key-only SSH account for a PRTG probe
   45-hardening.sh                  # lockdown: kill-on-logout, cron/at, sysctl, idle, ...
   46-firewall.sh                   # ufw: closed inbound; no egress to the local subnet
   48-motd.sh                       # student welcome message (house rules at login)
@@ -175,6 +176,35 @@ Students can run development web servers on the box — `python -m http.server`,
 - **One box, one IP, one port space.** If several students pick the same port they collide ("address already in use"). For 20 students, hand out per-student blocks inside 3000–3999 (e.g. student *N* → `3000 + N*10 … +9`, so 50 ports each) or just have them coordinate.
 - **Servers are ephemeral by design.** Kill-on-logout (and the idle-shell logout) mean a server only runs while that student is actively connected; on logout the port frees and nothing lingers. No SSH forwarding is involved — access is over your SDN, through the one port range the host firewall opens.
 - **Reaching a server from a machine on the same subnet still works.** The firewall's outbound block stops the *box* from initiating connections to its LAN neighbours; it doesn't stop those neighbours connecting *in* (see [Host firewall](#host-firewall)).
+
+## Monitoring (PRTG)
+
+The box can be monitored from a **PRTG probe over SSH**. It's a headless Linux box (no WMI/perf-counters) behind a default-deny firewall, so PRTG's **SSH sensors** — *SSH Load Average*, *SSH Meminfo*, *SSH Disk Free*, *SSH System Uptime* — are the natural fit: they read `/proc` and run `df`, so they need **no root**, and SSH is already the one open management port. `scripts/42-prtg.sh` sets up everything the probe needs; it's a `config.env` lever like the rest (`ENABLE_PRTG_MONITORING="no"` + a re-run removes the account, its group, and the firewall/fail2ban openings).
+
+What the stage does, and why it's safe on this locked-down box:
+
+| Concern | How it's handled |
+|---------|------------------|
+| **Reachability** | The probe (`PRTG_PROBE_IP`, default `10.90.196.53`) sits on the gateway's subnet `10.90.196.0/24`, which is **not** one of the admin subnets in `FW_ALLOW_INBOUND_FROM`. Config appends the probe IP to `FW_ALLOW_INBOUND_FROM` while monitoring is on, so ufw lets it reach SSH. (Polling is inbound; the box's replies flow back on the established connection, so the `10/8` egress block never interferes.) |
+| **Not caught by the roster** | The account is in its **own** group (`PRTG_GROUP`), never `STUDENT_GROUP`, so `10-users.sh` — which reconciles the student group against the CSV — never disables it. |
+| **No privilege** | Not in `ADMIN_GROUP`; the password is **locked** (key-only). `/proc` hidepid doesn't hide the global `/proc/loadavg`/`meminfo`, and `df` needs no rights, so the standard sensors work unprivileged. |
+| **Key, pinned** | You supply `PRTG_SSH_PUBKEY` (the public half of the key PRTG holds). It's installed with `from="PRTG_PROBE_IP",restrict,pty`, so the key **only** works from the probe and can't forward. |
+| **fail2ban** | The probe polls constantly; its IP is added to `FAIL2BAN_IGNORE_IPS` so a transient auth blip can never ban the monitoring host. |
+
+**Set it up:**
+
+1. Generate a keypair (anywhere) and give PRTG the **private** key:
+   ```bash
+   ssh-keygen -t ed25519 -C prtg@probe -f prtg_key
+   ```
+2. Put the **public** line (`prtg_key.pub`) into `PRTG_SSH_PUBKEY` in `config.env` (and adjust `PRTG_PROBE_IP` if the probe isn't `10.90.196.53`).
+3. Re-run the affected stages — `sudo ./provision.sh` (full) or at least `sudo bash provision.sh 00 40 42 46` (fail2ban, sshd `AllowGroups`, the account, the firewall).
+4. In PRTG: add this box as a **device**, set its **Credentials for Linux/Solaris/macOS (SSH/WBEM)** to user `prtg` with the matching **private** key, then add the SSH sensors above. Quick check from the probe:
+   ```bash
+   ssh -i prtg_key prtg@<vm-ip> 'cat /proc/loadavg'
+   ```
+
+> **Want SNMP instead?** It needs more: install/configure `snmpd` on the box and open **UDP 161** inbound (the firewall only opens TCP today, so that's a change to stage 46, not just a `config.env` line). Since SSH already gives CPU/mem/disk/uptime with nothing new opened, SSH sensors are the recommended path.
 
 ## Endpoint protection (Sophos)
 
