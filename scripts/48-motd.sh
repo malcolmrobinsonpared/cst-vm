@@ -32,9 +32,6 @@ cat >/etc/motd <<EOF
         source .venv/bin/activate
         pip install ...
 
-  - Dev web servers: listen on a port in ${MOTD_DEV_PORTS} and bind 0.0.0.0 
-    (not 127.0.0.1) to reach it from your browser on the network.
-
   Need help? Contact ${MOTD_IT_CONTACT}.
 
 EOF
